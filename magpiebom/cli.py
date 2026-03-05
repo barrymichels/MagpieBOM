@@ -10,6 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from magpiebom.constants import BROWSER_UA, SKIP_PDF_PATTERNS as _SKIP_PDF_PATTERNS, MAX_PAGES_PER_SEARCH, MAX_SOURCES_FOR_EXTRACTION, MAX_SEARCH_RESULTS
 from magpiebom.digikey import digikey_search
 from magpiebom.images import download_image, save_final_image
 from magpiebom.mouser import mouser_search
@@ -83,10 +84,7 @@ def _probe_url(url: str | None, tracer: Tracer | None = None) -> bool:
         t0 = time.monotonic()
         resp = requests.head(
             url, timeout=5, allow_redirects=True,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
-                              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
-            },
+            headers={"User-Agent": BROWSER_UA},
         )
         duration_ms = (time.monotonic() - t0) * 1000
         if tracer:
@@ -261,9 +259,6 @@ def _search_datasheet_url(
     return None
 
 
-_SKIP_PDF_PATTERNS = ["terms", "privacy", "cookie", "legal", "compliance", "return"]
-
-
 def _scrape_datasheet_playwright(page_url: str, part_number: str, tracer: Tracer | None = None) -> str | None:
     """Last resort: load product page in Playwright and extract datasheet PDF links."""
     try:
@@ -333,10 +328,7 @@ def _download_datasheet(url: str, part_number: str, output_dir: str, tracer: Tra
         tracer.detail(f"Downloading datasheet: {url}")
     try:
         t0 = time.monotonic()
-        resp = requests.get(url, timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
-                          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
-        })
+        resp = requests.get(url, timeout=15, headers={"User-Agent": BROWSER_UA})
         duration_ms = (time.monotonic() - t0) * 1000
         resp.raise_for_status()
         if tracer:
@@ -493,7 +485,7 @@ def run_pipeline(
         for attempt, query_template in enumerate(queries):
             tracer.step(f"Search attempt {attempt + 1}: {query_template.format(part=part_number)}")
 
-            search_results = brave_search(part_number, api_key=api_key, count=15, query_template=query_template, tracer=tracer)
+            search_results = brave_search(part_number, api_key=api_key, count=MAX_SEARCH_RESULTS, query_template=query_template, tracer=tracer)
             if not search_results:
                 tracer.detail("No search results found")
                 continue
@@ -512,7 +504,7 @@ def run_pipeline(
 
             pages_scraped = 0
             for sr in search_results:
-                if pages_scraped >= 5:
+                if pages_scraped >= MAX_PAGES_PER_SEARCH:
                     break
                 url = sr["url"]
                 if url in seen_urls:
@@ -562,7 +554,7 @@ def run_pipeline(
         ).upper()]
         other_sources = [s for s in all_sources if s not in exact_sources]
         # Exact matches first, then others, capped at 10 total
-        prioritized_sources = (exact_sources + other_sources)[:10]
+        prioritized_sources = (exact_sources + other_sources)[:MAX_SOURCES_FOR_EXTRACTION]
 
         tracer.step("Extracting description from all sources...")
         tracer.detail(f"Using {len(prioritized_sources)} sources ({len(exact_sources)} exact matches, {len(all_sources)} total collected)")

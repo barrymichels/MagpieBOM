@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlparse, unquote
 import requests
 from bs4 import BeautifulSoup
 
+from magpiebom.constants import SKIP_PDF_PATTERNS
 from magpiebom.tracer import Tracer
 
 # Image dimension attributes below this are considered icons/logos
@@ -181,8 +182,6 @@ def _extract_images(soup: BeautifulSoup, base_url: str) -> list[str]:
     return candidates[:MAX_IMAGES_PER_PAGE]
 
 
-# URL path segments that indicate non-product PDFs
-SKIP_PDF_PATTERNS = ["terms", "privacy", "cookie", "legal", "compliance", "return"]
 MAX_DATASHEETS = 3
 
 

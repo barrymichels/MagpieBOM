@@ -9,10 +9,7 @@ import requests
 
 from magpiebom.tracer import Tracer
 
-_BROWSER_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
-)
+from magpiebom.constants import BROWSER_UA as _BROWSER_UA
 
 
 def download_image(url: str, timeout: int = 10, tracer: Tracer | None = None) -> str | None:
