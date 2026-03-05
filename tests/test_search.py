@@ -1,6 +1,6 @@
 import responses
 import pytest
-from magpiebom.search import brave_search
+from magpiebom.search import brave_search, _site_priority
 
 
 SAMPLE_BRAVE_RESPONSE = {
@@ -91,3 +91,22 @@ def test_brave_search_prioritizes_known_sites():
     results = brave_search("LM7805", api_key="test-key", count=5)
     # Known sites should be first
     assert "mouser.com" in results[0]["url"]
+
+
+def test_site_priority_known():
+    assert _site_priority("https://www.mouser.com/LM7805") == 0
+    assert _site_priority("https://www.digikey.com/product/LM7805") == 0
+    assert _site_priority("https://lcsc.com/product-detail/foo") == 0
+
+
+def test_site_priority_unknown():
+    assert _site_priority("https://blog.example.com/review") == 1
+    assert _site_priority("https://randomsite.org/part") == 1
+
+
+@responses.activate
+def test_brave_search_custom_query_template():
+    responses.add(responses.GET, "https://api.search.brave.com/res/v1/web/search",
+                  json={"web": {"results": []}}, status=200)
+    brave_search("LM7805", api_key="key", query_template="{part} datasheet pdf")
+    assert "LM7805 datasheet pdf" in responses.calls[0].request.params.get("q", "")

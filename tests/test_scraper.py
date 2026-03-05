@@ -1,4 +1,4 @@
-from magpiebom.scraper import extract_page_info, _extract_text_signals, _extract_category_from_url
+from magpiebom.scraper import extract_page_info, _extract_text_signals, _extract_category_from_url, _extract_datasheets, _parse_int
 from bs4 import BeautifulSoup
 
 
@@ -183,3 +183,44 @@ def test_extract_images_filters_svg_og_image():
     html = '<html><head><meta property="og:image" content="https://example.com/logo.svg"></head><body></body></html>'
     info = extract_page_info(html, "https://example.com/product")
     assert len(info["image_urls"]) == 0
+
+
+def test_extract_datasheets_from_links():
+    html = '<html><body><a href="https://example.com/datasheet.pdf">Datasheet</a></body></html>'
+    soup = BeautifulSoup(html, "lxml")
+    result = _extract_datasheets(soup, html, "https://example.com")
+    assert result == ["https://example.com/datasheet.pdf"]
+
+
+def test_extract_datasheets_skips_terms():
+    html = '<html><body><a href="https://example.com/terms.pdf">Terms</a><a href="https://example.com/ds.pdf">DS</a></body></html>'
+    soup = BeautifulSoup(html, "lxml")
+    result = _extract_datasheets(soup, html, "https://example.com")
+    assert "https://example.com/terms.pdf" not in result
+    assert "https://example.com/ds.pdf" in result
+
+
+def test_extract_datasheets_regex_fallback():
+    html = '<html><body><script>var url = "https://cdn.example.com/LM7805.pdf";</script></body></html>'
+    soup = BeautifulSoup(html, "lxml")
+    result = _extract_datasheets(soup, html, "https://example.com")
+    assert "https://cdn.example.com/LM7805.pdf" in result
+
+
+def test_extract_datasheets_limits_to_three():
+    links = "".join(f'<a href="https://example.com/ds{i}.pdf">DS{i}</a>' for i in range(10))
+    html = f"<html><body>{links}</body></html>"
+    soup = BeautifulSoup(html, "lxml")
+    result = _extract_datasheets(soup, html, "https://example.com")
+    assert len(result) <= 3
+
+
+def test_parse_int_valid():
+    assert _parse_int("100") == 100
+    assert _parse_int(200) == 200
+
+
+def test_parse_int_invalid():
+    assert _parse_int(None) is None
+    assert _parse_int("abc") is None
+    assert _parse_int("") is None
