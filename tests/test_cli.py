@@ -1,7 +1,7 @@
 # tests/test_cli.py
 from unittest.mock import patch, MagicMock, call
 import responses as resp_mock
-from magpiebom.cli import parse_args, run_pipeline, _is_url_structurally_valid, _probe_url, _find_source_url_fallback, _fix_broken_urls, _search_datasheet_url, _scrape_datasheet_playwright
+from magpiebom.cli import parse_args, run_pipeline, _is_url_structurally_valid, _probe_url, _find_source_url_fallback, _fix_broken_urls, _search_datasheet_url, _scrape_datasheet_playwright, _download_datasheet
 
 
 def _mock_tracer_cls():
@@ -556,3 +556,42 @@ def test_fix_broken_urls_skips_structurally_bad_source():
             # Should NOT probe the structurally bad URL
             mock_probe.assert_not_called()
     assert result["source_url"] is None
+
+
+# --- Task 14: Error paths and _download_datasheet tests ---
+
+@patch("magpiebom.cli.load_dotenv")
+@patch("os.environ", {})
+def test_run_pipeline_missing_brave_api_key(mock_dotenv):
+    """Should return empty result when BRAVE_API_KEY is not set."""
+    result = run_pipeline("LM7805", output_dir="./parts", no_open=True)
+    assert result["image_path"] is None
+    assert result["source"] == ""
+
+
+@resp_mock.activate
+def test_download_datasheet_success(tmp_path):
+    from pathlib import Path
+    pdf_content = b"%PDF-1.4 fake pdf content"
+    resp_mock.add(resp_mock.GET, "https://example.com/ds.pdf", body=pdf_content,
+                  content_type="application/pdf", status=200)
+    result = _download_datasheet("https://example.com/ds.pdf", "LM7805", str(tmp_path))
+    assert result is not None
+    assert Path(result).exists()
+    assert Path(result).read_bytes() == pdf_content
+
+
+@resp_mock.activate
+def test_download_datasheet_not_pdf(tmp_path):
+    resp_mock.add(resp_mock.GET, "https://example.com/fake.pdf", body=b"<html>Not a PDF</html>",
+                  content_type="text/html", status=200)
+    result = _download_datasheet("https://example.com/fake.pdf", "LM7805", str(tmp_path))
+    assert result is None
+
+
+@resp_mock.activate
+def test_download_datasheet_bad_magic_bytes(tmp_path):
+    resp_mock.add(resp_mock.GET, "https://example.com/bad.pdf", body=b"NOT-PDF-CONTENT",
+                  content_type="application/pdf", status=200)
+    result = _download_datasheet("https://example.com/bad.pdf", "LM7805", str(tmp_path))
+    assert result is None
