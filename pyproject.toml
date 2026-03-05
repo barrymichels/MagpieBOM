@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "magpiebom"
+version = "0.1.0"
+description = "AI-powered visual search for electronic component images and datasheets"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+    "Pillow>=10.0",
+    "playwright>=1.40",
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "responses>=0.25"]
+
+[tool.setuptools.packages.find]
+include = ["magpiebom*"]
+
+[project.scripts]
+magpiebom = "magpiebom.cli:main"

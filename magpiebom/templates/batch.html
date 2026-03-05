@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}MagpieBOM - Batch {{ batch_id }}{% endblock %}
+{% block content %}
+
+<h1 style="margin-bottom: 8px;">Batch Results</h1>
+<p class="summary" id="summary">
+  <span id="found-count">{{ found }}</span> found,
+  <span id="not-found-count">{{ not_found }}</span> not found,
+  <span id="pending-count">{{ pending }}</span> pending,
+  {{ total }} total
+</p>
+
+<div class="progress-bar" id="progress-bar" {% if pending == 0 %}style="display:none"{% endif %}>
+  <div class="progress-fill" id="progress-fill" style="width: {{ ((found + not_found) / total * 100) if total > 0 else 100 }}%"></div>
+</div>
+
+<table>
+<thead>
+<tr>
+  <th>Part Number</th>
+  <th>Status</th>
+  <th>Image</th>
+  <th>Description</th>
+  <th>Source</th>
+  <th>Datasheet</th>
+  <th>Actions</th>
+</tr>
+</thead>
+<tbody>
+{% for p in parts %}
+<tr id="row-{{ loop.index0 }}">
+  <td>{{ p.part_number }}</td>
+  <td id="status-{{ loop.index0 }}">
+    {% if p.image_path %}
+      <span class="found">Found</span>
+    {% elif p.source == "not_found" %}
+      <span class="not-found">Not Found</span>
+    {% else %}
+      <span class="pending">Pending</span>
+    {% endif %}
+  </td>
+  <td class="img-cell" id="img-{{ loop.index0 }}">
+    {% if p.image_path %}
+      <img src="/batch/{{ batch_id }}/images/{{ p.image_path }}" alt="{{ p.part_number }}">
+    {% else %}
+      <span class="no-image">&mdash;</span>
+    {% endif %}
+  </td>
+  <td id="desc-{{ loop.index0 }}">{{ p.description or "" }}</td>
+  <td id="source-{{ loop.index0 }}">
+    {% if p.source_url %}
+      <a href="{{ p.source_url }}" target="_blank">{{ p.source }}</a>
+    {% else %}
+      {{ p.source }}
+    {% endif %}
+  </td>
+  <td id="ds-{{ loop.index0 }}">
+    {% if p.datasheet_url %}
+      <a href="{{ p.datasheet_url }}" target="_blank">PDF</a>
+    {% else %}
+      &mdash;
+    {% endif %}
+  </td>
+  <td id="action-{{ loop.index0 }}">
+    <button class="btn btn-sm" onclick="retryPart('{{ p.part_number }}', {{ loop.index0 }})">Retry</button>
+  </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<script>
+(function() {
+  const batchId = "{{ batch_id }}";
+  const total = {{ total }};
+  let foundCount = {{ found }};
+  let notFoundCount = {{ not_found }};
+  let pendingCount = {{ pending }};
+
+  function updateSummary() {
+    document.getElementById("found-count").textContent = foundCount;
+    document.getElementById("not-found-count").textContent = notFoundCount;
+    document.getElementById("pending-count").textContent = pendingCount;
+    const pct = ((foundCount + notFoundCount) / total * 100);
+    document.getElementById("progress-fill").style.width = pct + "%";
+  }
+
+  function applyStatus(d) {
+    const cell = document.getElementById("status-" + d.index);
+    if (cell) cell.innerHTML = '<span class="pending">Searching\u2026</span>';
+    // Disable retry button while searching
+    const actionCell = document.getElementById("action-" + d.index);
+    if (actionCell) {
+      const btn = actionCell.querySelector("button");
+      if (btn) { btn.disabled = true; btn.textContent = "Searching\u2026"; }
+    }
+  }
+
+  function applyResult(d, isRetry) {
+    const i = d.index;
+
+    // Status
+    const statusCell = document.getElementById("status-" + i);
+    if (d.image_path) {
+      statusCell.innerHTML = '<span class="found">Found</span>';
+      if (!isRetry) foundCount++;
+    } else {
+      statusCell.innerHTML = '<span class="not-found">Not Found</span>';
+      if (!isRetry) notFoundCount++;
+    }
+    if (!isRetry) pendingCount--;
+
+    // Image
+    const imgCell = document.getElementById("img-" + i);
+    if (d.image_path) {
+      imgCell.innerHTML = '<img src="/batch/' + batchId + '/images/' + d.image_path + '?t=' + Date.now() + '" alt="' + d.part_number + '">';
+    } else {
+      imgCell.innerHTML = '<span class="no-image">&mdash;</span>';
+    }
+
+    // Description
+    document.getElementById("desc-" + i).textContent = d.description || "";
+
+    // Source
+    const srcCell = document.getElementById("source-" + i);
+    if (d.source_url) {
+      srcCell.innerHTML = '<a href="' + d.source_url + '" target="_blank">' + (d.source || "") + '</a>';
+    } else {
+      srcCell.textContent = d.source || "";
+    }
+
+    // Datasheet
+    const dsCell = document.getElementById("ds-" + i);
+    if (d.datasheet_url) {
+      dsCell.innerHTML = '<a href="' + d.datasheet_url + '" target="_blank">PDF</a>';
+    } else {
+      dsCell.innerHTML = "&mdash;";
+    }
+
+    // Re-enable retry button
+    const actionCell = document.getElementById("action-" + i);
+    if (actionCell) {
+      actionCell.innerHTML = '<button class="btn btn-sm" onclick="retryPart(\'' + d.part_number + '\', ' + i + ')">Retry</button>';
+    }
+
+    if (!isRetry) updateSummary();
+  }
+
+  // Batch stream for pending parts
+  if (pendingCount > 0) {
+    const evtSource = new EventSource("/batch/" + batchId + "/stream");
+
+    evtSource.addEventListener("status", function(e) { applyStatus(JSON.parse(e.data)); });
+    evtSource.addEventListener("result", function(e) { applyResult(JSON.parse(e.data), false); });
+    evtSource.addEventListener("done", function(e) {
+      evtSource.close();
+      document.getElementById("progress-bar").style.display = "none";
+    });
+    evtSource.onerror = function() { evtSource.close(); };
+  }
+
+  // Retry via SSE
+  window.retryPart = function(partNumber, index) {
+    applyStatus({index: index});
+    const src = new EventSource("/batch/" + batchId + "/retry/" + encodeURIComponent(partNumber));
+    src.addEventListener("status", function(e) { applyStatus(JSON.parse(e.data)); });
+    src.addEventListener("result", function(e) { applyResult(JSON.parse(e.data), true); });
+    src.addEventListener("done", function(e) { src.close(); });
+    src.addEventListener("error", function(e) { src.close(); });
+  };
+})();
+</script>
+
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}MagpieBOM - Home{% endblock %}
+{% block content %}
+
+<h1 style="margin-bottom: 24px;">Part Search</h1>
+
+<div style="display: flex; gap: 32px; flex-wrap: wrap;">
+  <div style="flex: 1; min-width: 300px;">
+    <h2 style="margin-bottom: 12px;">New Batch</h2>
+    <form method="POST" action="/batch/new">
+      <textarea name="parts" rows="10" placeholder="Paste part numbers, one per line..." style="width: 100%; padding: 10px; font-family: monospace; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; resize: vertical;"></textarea>
+      <button type="submit" class="btn" style="margin-top: 8px;">Search Parts</button>
+    </form>
+  </div>
+
+  <div style="flex: 1; min-width: 300px;">
+    <h2 style="margin-bottom: 12px;">Previous Batches</h2>
+    {% if batches %}
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      {% for b in batches %}
+      <a href="/batch/{{ b.id }}" style="display: block; padding: 12px; background: #fff; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #222;">
+        <div style="font-weight: 600;">{{ b.created }}</div>
+        <div style="color: #555; font-size: 0.9em; margin-top: 4px;">
+          {{ b.total }} parts &mdash;
+          <span class="found">{{ b.found }} found</span>,
+          {% if b.pending > 0 %}<span class="pending">{{ b.pending }} pending</span>,{% endif %}
+          <span class="not-found">{{ b.not_found }} not found</span>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color: #999;">No batches yet. Paste some part numbers to get started.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}
