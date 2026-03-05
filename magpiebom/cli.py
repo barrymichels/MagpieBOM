@@ -358,6 +358,215 @@ def _download_datasheet(url: str, part_number: str, output_dir: str, tracer: Tra
         return None
 
 
+def _try_supplier_api(
+    supplier_name: str,
+    search_fn,
+    search_kwargs: dict,
+    part_number: str,
+    tracer: Tracer,
+) -> dict | None:
+    """Try a supplier API. Returns a partial result dict or None to fall through."""
+    tracer.step(f"Trying {supplier_name} API...")
+    try:
+        api_result = search_fn(part_number, **search_kwargs, tracer=tracer)
+        if not api_result or not api_result.get("image_url"):
+            tracer.detail(f"{supplier_name}: no results")
+            return None
+
+        tracer.detail(f"{supplier_name} found: {api_result['description']}")
+        tracer.detail(f"Downloading: {api_result['image_url']}")
+        temp_path = download_image(api_result["image_url"], tracer=tracer)
+        if not temp_path:
+            tracer.detail(f"{supplier_name} image download failed, falling back to search")
+            return None
+
+        return {
+            "temp_path": temp_path,
+            "description": api_result["description"],
+            "source": supplier_name.lower(),
+            "manufacturer": api_result.get("manufacturer", ""),
+            "source_url": api_result.get("product_detail_url", "") or api_result.get("digikey_pn", ""),
+            "datasheet_url": api_result.get("datasheet_url"),
+            "api_result": api_result,
+        }
+    except Exception as e:
+        tracer.error(f"{supplier_name} API failed: {e}", exception=e)
+        return None
+
+
+def _finalize_result(
+    result: PipelineResult,
+    api_key: str,
+    output_dir: str,
+    no_open: bool,
+    tracer: Tracer,
+) -> PipelineResult:
+    """Search for datasheet, download it, validate URLs, optionally open image."""
+    part_number = result["part_number"]
+    manufacturer = result.get("manufacturer", "")  # type: ignore[typeddict-item]
+
+    if not result["datasheet_url"]:
+        result["datasheet_url"] = _search_datasheet_url(
+            part_number, api_key, tracer=tracer, manufacturer=manufacturer,
+        )
+    if result["datasheet_url"]:
+        result["datasheet_path"] = _download_datasheet(
+            result["datasheet_url"], part_number, output_dir, tracer=tracer,
+        )
+    _fix_broken_urls(result, api_key, tracer=tracer)
+    if not no_open and result["image_path"]:
+        subprocess.Popen(
+            ["xdg-open", result["image_path"]],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    tracer.result(result)
+    print(f"Trace: {tracer.trace_path}", file=sys.stderr)
+    return result
+
+
+def _try_web_search(
+    part_number: str,
+    result: PipelineResult,
+    output_dir: str,
+    api_key: str,
+    client,
+    model: str,
+    no_open: bool,
+    tracer: Tracer,
+) -> PipelineResult:
+    """Web search fallback: scrape pages, extract description, validate images."""
+    queries = [
+        '"{part}" electronic component',
+        '{part} site:lcsc.com OR site:jlcpcb.com OR site:mouser.com',
+        '"{part}" datasheet photo',
+        '{part} component image',
+    ]
+
+    seen_urls: set[str] = set()
+    seen_images: set[str] = set()
+
+    # === Phase 1: Collect all data (scrape pages + gather Brave snippets) ===
+    all_sources = []
+    all_image_candidates = []
+
+    for attempt, query_template in enumerate(queries):
+        tracer.step(f"Search attempt {attempt + 1}: {query_template.format(part=part_number)}")
+
+        search_results = brave_search(part_number, api_key=api_key, count=MAX_SEARCH_RESULTS, query_template=query_template, tracer=tracer)
+        if not search_results:
+            tracer.detail("No search results found")
+            continue
+
+        for sr in search_results:
+            if sr.get("title") or sr.get("description"):
+                all_sources.append({
+                    "title": sr.get("title", ""),
+                    "meta_description": sr.get("description", ""),
+                    "meta_keywords": "",
+                    "url_path": "",
+                    "url_category": "",
+                    "paragraphs": [],
+                })
+
+        pages_scraped = 0
+        for sr in search_results:
+            if pages_scraped >= MAX_PAGES_PER_SEARCH:
+                break
+            url = sr["url"]
+            if url in seen_urls:
+                tracer.detail(f"Already tried: {url}")
+                continue
+            seen_urls.add(url)
+            tracer.detail(f"Scraping: {url}")
+            try:
+                page_info = scrape_page(url, tracer=tracer)
+            except Exception as e:
+                tracer.detail(f"Failed to scrape {url}: {e}")
+                continue
+
+            pages_scraped += 1
+            text_signals = page_info["text_signals"]
+            all_sources.append(text_signals)
+
+            if not result["datasheet_url"] and page_info.get("datasheet_urls"):
+                result["datasheet_url"] = page_info["datasheet_urls"][0]
+
+            page_text = (
+                text_signals.get("title", "") + " " +
+                text_signals.get("meta_description", "") + " " +
+                text_signals.get("meta_keywords", "") + " " +
+                sr.get("title", "")
+            ).upper()
+            on_component_site = any(site in url for site in KNOWN_COMPONENT_SITES)
+            if part_number.upper() not in page_text:
+                if not on_component_site:
+                    tracer.detail(f"Skipping images: page doesn't mention {part_number}")
+                    continue
+                tracer.detail(f"Page doesn't mention exact part number, but is a component site — collecting images")
+
+            for img_url in page_info["image_urls"]:
+                if img_url not in seen_images:
+                    seen_images.add(img_url)
+                    all_image_candidates.append((img_url, url))
+
+    # === Phase 2: Extract description ONCE from all collected sources ===
+    pn_upper = part_number.upper()
+    exact_sources = [s for s in all_sources if pn_upper in (
+        s.get("title", "") + " " + s.get("meta_description", "") + " " + s.get("meta_keywords", "")
+    ).upper()]
+    other_sources = [s for s in all_sources if s not in exact_sources]
+    prioritized_sources = (exact_sources + other_sources)[:MAX_SOURCES_FOR_EXTRACTION]
+
+    tracer.step("Extracting description from all sources...")
+    tracer.detail(f"Using {len(prioritized_sources)} sources ({len(exact_sources)} exact matches, {len(all_sources)} total collected)")
+    best_description = extract_description_from_sources(
+        client, model, part_number, prioritized_sources, tracer=tracer,
+    )
+    if best_description:
+        tracer.detail(f"Aggregated description: {best_description[:80]}")
+    else:
+        tracer.detail("No description could be extracted from any source")
+
+    # === Phase 3: Validate images using the aggregated description ===
+    for img_url, source_url in all_image_candidates:
+        tracer.detail(f"Downloading: {img_url}")
+        temp_path = download_image(img_url, tracer=tracer)
+        if temp_path is None:
+            tracer.detail("Download failed, skipping")
+            continue
+
+        tracer.step("Asking LLM to validate...")
+        verdict = validate_image(
+            client=client,
+            model=model,
+            image_path=temp_path,
+            part_number=part_number,
+            description=best_description,
+            tracer=tracer,
+        )
+        tokens = ""
+        if "prompt_tokens" in verdict:
+            tokens = f" ({verdict['prompt_tokens']}+{verdict['completion_tokens']} tokens)"
+        tracer.detail(f"LLM says: match={verdict['match']}, reason={verdict['reason']}{tokens}")
+
+        if verdict["match"]:
+            saved_path = save_final_image(temp_path, part_number, output_dir)
+            Path(temp_path).unlink(missing_ok=True)
+            print(f"Saved: {saved_path}")
+            result["image_path"] = saved_path
+            result["description"] = best_description
+            result["source"] = "web"
+            result["source_url"] = source_url
+            return _finalize_result(result, api_key, output_dir, no_open, tracer)
+
+        Path(temp_path).unlink(missing_ok=True)
+
+    print(f"No matching image found for {part_number}", file=sys.stderr)
+    tracer.result(result)
+    print(f"Trace: {tracer.trace_path}", file=sys.stderr)
+    return result
+
+
 def run_pipeline(
     part_number: str,
     output_dir: str = "./parts",
@@ -382,7 +591,6 @@ def run_pipeline(
         return result
 
     with Tracer(part_number, verbose=verbose) as tracer:
-        # Set up LLM client
         llm_url = os.environ.get("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
         client = OpenAI(base_url=llm_url, api_key=os.environ.get("LLM_API_KEY", "not-needed"))
         model = get_model_name(client)
@@ -391,229 +599,42 @@ def run_pipeline(
         # Try Mouser API first (structured data, reliable images)
         mouser_key = os.environ.get("MOUSER_SEARCH_API_KEY")
         if mouser_key:
-            tracer.step("Trying Mouser API...")
-            try:
-                mouser_result = mouser_search(part_number, api_key=mouser_key, tracer=tracer)
-                if mouser_result and mouser_result["image_url"]:
-                    tracer.detail(f"Mouser found: {mouser_result['description']}")
-                    tracer.detail(f"Downloading: {mouser_result['image_url']}")
-                    temp_path = download_image(mouser_result["image_url"], tracer=tracer)
-                    if temp_path is None:
-                        tracer.detail("Mouser image download failed (blocked or not an image), falling back to search")
-                    elif temp_path:
-                        # Mouser API exact match — trust without LLM validation
-                        saved_path = save_final_image(temp_path, part_number, output_dir)
-                        Path(temp_path).unlink(missing_ok=True)
-                        print(f"Saved: {saved_path} (via Mouser API)")
-                        result["image_path"] = saved_path
-                        result["description"] = mouser_result["description"]
-                        result["source"] = "mouser"
-                        result["manufacturer"] = mouser_result.get("manufacturer", "")
-                        result["source_url"] = mouser_result.get("product_detail_url") or f"https://www.mouser.com/ProductDetail/{mouser_result['mouser_pn']}"
-                        result["datasheet_url"] = mouser_result.get("datasheet_url")
-                        if not result["datasheet_url"]:
-                            # Mouser API doesn't always include datasheet URLs; search the web
-                            result["datasheet_url"] = _search_datasheet_url(part_number, api_key, tracer=tracer, manufacturer=result["manufacturer"])
-                        if result["datasheet_url"]:
-                            result["datasheet_path"] = _download_datasheet(
-                                result["datasheet_url"], part_number, output_dir, tracer=tracer
-                            )
-                        _fix_broken_urls(result, api_key, tracer=tracer)
-                        if not no_open:
-                            subprocess.Popen(["xdg-open", saved_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        tracer.result(result)
-                        print(f"Trace: {tracer.trace_path}", file=sys.stderr)
-                        return result
-                else:
-                    tracer.detail("Mouser: no results")
-            except Exception as e:
-                tracer.error(f"Mouser API failed: {e}", exception=e)
-
-        # Try DigiKey API
-        dk_client_id = os.environ.get("DIGIKEY_CLIENT_ID")
-        dk_client_secret = os.environ.get("DIGIKEY_CLIENT_SECRET")
-        if dk_client_id and dk_client_secret:
-            tracer.step("Trying DigiKey API...")
-            try:
-                dk_result = digikey_search(part_number, client_id=dk_client_id, client_secret=dk_client_secret, tracer=tracer)
-                if dk_result and dk_result["image_url"]:
-                    tracer.detail(f"DigiKey found: {dk_result['description']}")
-                    tracer.detail(f"Downloading: {dk_result['image_url']}")
-                    temp_path = download_image(dk_result["image_url"], tracer=tracer)
-                    if temp_path is None:
-                        tracer.detail("DigiKey image download failed, falling back to search")
-                    elif temp_path:
-                        saved_path = save_final_image(temp_path, part_number, output_dir)
-                        Path(temp_path).unlink(missing_ok=True)
-                        print(f"Saved: {saved_path} (via DigiKey API)")
-                        result["image_path"] = saved_path
-                        result["description"] = dk_result["description"]
-                        result["source"] = "digikey"
-                        result["manufacturer"] = dk_result.get("manufacturer", "")
-                        result["source_url"] = f"https://www.digikey.com/en/products/detail/-/-/{dk_result['digikey_pn']}"
-                        result["datasheet_url"] = dk_result.get("datasheet_url")
-                        if not result["datasheet_url"]:
-                            result["datasheet_url"] = _search_datasheet_url(part_number, api_key, tracer=tracer, manufacturer=result["manufacturer"])
-                        if result["datasheet_url"]:
-                            result["datasheet_path"] = _download_datasheet(
-                                result["datasheet_url"], part_number, output_dir, tracer=tracer
-                            )
-                        _fix_broken_urls(result, api_key, tracer=tracer)
-                        if not no_open:
-                            subprocess.Popen(["xdg-open", saved_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        tracer.result(result)
-                        print(f"Trace: {tracer.trace_path}", file=sys.stderr)
-                        return result
-                else:
-                    tracer.detail("DigiKey: no results")
-            except Exception as e:
-                tracer.error(f"DigiKey API failed: {e}", exception=e)
-
-        queries = [
-            '"{part}" electronic component',
-            '{part} site:lcsc.com OR site:jlcpcb.com OR site:mouser.com',
-            '"{part}" datasheet photo',
-            '{part} component image',
-        ]
-
-        seen_urls = set()
-        seen_images = set()
-
-        # === Phase 1: Collect all data (scrape pages + gather Brave snippets) ===
-        all_sources = []       # text signal dicts for aggregated extraction
-        all_image_candidates = []  # (image_url, source_page_url) tuples
-
-        for attempt, query_template in enumerate(queries):
-            tracer.step(f"Search attempt {attempt + 1}: {query_template.format(part=part_number)}")
-
-            search_results = brave_search(part_number, api_key=api_key, count=MAX_SEARCH_RESULTS, query_template=query_template, tracer=tracer)
-            if not search_results:
-                tracer.detail("No search results found")
-                continue
-
-            # Collect Brave snippets as lightweight sources
-            for sr in search_results:
-                if sr.get("title") or sr.get("description"):
-                    all_sources.append({
-                        "title": sr.get("title", ""),
-                        "meta_description": sr.get("description", ""),
-                        "meta_keywords": "",
-                        "url_path": "",
-                        "url_category": "",
-                        "paragraphs": [],
-                    })
-
-            pages_scraped = 0
-            for sr in search_results:
-                if pages_scraped >= MAX_PAGES_PER_SEARCH:
-                    break
-                url = sr["url"]
-                if url in seen_urls:
-                    tracer.detail(f"Already tried: {url}")
-                    continue
-                seen_urls.add(url)
-                tracer.detail(f"Scraping: {url}")
-                try:
-                    page_info = scrape_page(url, tracer=tracer)
-                except Exception as e:
-                    tracer.detail(f"Failed to scrape {url}: {e}")
-                    continue  # Don't count failed scrapes
-
-                pages_scraped += 1
-                text_signals = page_info["text_signals"]
-                all_sources.append(text_signals)
-
-                # Grab datasheet URLs from this page if we don't have one yet
-                if not result["datasheet_url"] and page_info.get("datasheet_urls"):
-                    result["datasheet_url"] = page_info["datasheet_urls"][0]
-
-                # Collect image candidates from pages that mention the part number
-                # Relaxed for known component sites
-                page_text = (
-                    text_signals.get("title", "") + " " +
-                    text_signals.get("meta_description", "") + " " +
-                    text_signals.get("meta_keywords", "") + " " +
-                    sr.get("title", "")
-                ).upper()
-                on_component_site = any(site in url for site in KNOWN_COMPONENT_SITES)
-                if part_number.upper() not in page_text:
-                    if not on_component_site:
-                        tracer.detail(f"Skipping images: page doesn't mention {part_number}")
-                        continue
-                    tracer.detail(f"Page doesn't mention exact part number, but is a component site — collecting images")
-
-                for img_url in page_info["image_urls"]:
-                    if img_url not in seen_images:
-                        seen_images.add(img_url)
-                        all_image_candidates.append((img_url, url))
-
-        # === Phase 2: Extract description ONCE from all collected sources ===
-        # Prioritize sources that mention the exact part number, cap total
-        pn_upper = part_number.upper()
-        exact_sources = [s for s in all_sources if pn_upper in (
-            s.get("title", "") + " " + s.get("meta_description", "") + " " + s.get("meta_keywords", "")
-        ).upper()]
-        other_sources = [s for s in all_sources if s not in exact_sources]
-        # Exact matches first, then others, capped at 10 total
-        prioritized_sources = (exact_sources + other_sources)[:MAX_SOURCES_FOR_EXTRACTION]
-
-        tracer.step("Extracting description from all sources...")
-        tracer.detail(f"Using {len(prioritized_sources)} sources ({len(exact_sources)} exact matches, {len(all_sources)} total collected)")
-        best_description = extract_description_from_sources(
-            client, model, part_number, prioritized_sources, tracer=tracer,
-        )
-        if best_description:
-            tracer.detail(f"Aggregated description: {best_description[:80]}")
-        else:
-            tracer.detail("No description could be extracted from any source")
-
-        # === Phase 3: Validate images using the aggregated description ===
-        for img_url, source_url in all_image_candidates:
-            tracer.detail(f"Downloading: {img_url}")
-            temp_path = download_image(img_url, tracer=tracer)
-            if temp_path is None:
-                tracer.detail("Download failed, skipping")
-                continue
-
-            tracer.step("Asking LLM to validate...")
-            verdict = validate_image(
-                client=client,
-                model=model,
-                image_path=temp_path,
-                part_number=part_number,
-                description=best_description,
-                tracer=tracer,
-            )
-            tokens = ""
-            if "prompt_tokens" in verdict:
-                tokens = f" ({verdict['prompt_tokens']}+{verdict['completion_tokens']} tokens)"
-            tracer.detail(f"LLM says: match={verdict['match']}, reason={verdict['reason']}{tokens}")
-
-            if verdict["match"]:
+            supplier_hit = _try_supplier_api("Mouser", mouser_search, {"api_key": mouser_key}, part_number, tracer)
+            if supplier_hit:
+                temp_path = supplier_hit["temp_path"]
                 saved_path = save_final_image(temp_path, part_number, output_dir)
                 Path(temp_path).unlink(missing_ok=True)
-                print(f"Saved: {saved_path}")
+                print(f"Saved: {saved_path} (via Mouser API)")
                 result["image_path"] = saved_path
-                result["description"] = best_description
-                result["source"] = "web"
-                result["source_url"] = source_url
-                if result["datasheet_url"]:
-                    result["datasheet_path"] = _download_datasheet(
-                        result["datasheet_url"], part_number, output_dir, tracer=tracer
-                    )
-                _fix_broken_urls(result, api_key, tracer=tracer)
-                if not no_open:
-                    subprocess.Popen(["xdg-open", saved_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                tracer.result(result)
-                print(f"Trace: {tracer.trace_path}", file=sys.stderr)
-                return result
+                result["description"] = supplier_hit["description"]
+                result["source"] = "mouser"
+                result["manufacturer"] = supplier_hit["manufacturer"]  # type: ignore[typeddict-unknown-key]
+                api_result = supplier_hit["api_result"]
+                result["source_url"] = api_result.get("product_detail_url") or f"https://www.mouser.com/ProductDetail/{api_result['mouser_pn']}"
+                result["datasheet_url"] = api_result.get("datasheet_url")
+                return _finalize_result(result, api_key, output_dir, no_open, tracer)
 
-            Path(temp_path).unlink(missing_ok=True)
+        # Try DigiKey API
+        dk_id = os.environ.get("DIGIKEY_CLIENT_ID")
+        dk_secret = os.environ.get("DIGIKEY_CLIENT_SECRET")
+        if dk_id and dk_secret:
+            supplier_hit = _try_supplier_api("DigiKey", digikey_search, {"client_id": dk_id, "client_secret": dk_secret}, part_number, tracer)
+            if supplier_hit:
+                temp_path = supplier_hit["temp_path"]
+                saved_path = save_final_image(temp_path, part_number, output_dir)
+                Path(temp_path).unlink(missing_ok=True)
+                print(f"Saved: {saved_path} (via DigiKey API)")
+                result["image_path"] = saved_path
+                result["description"] = supplier_hit["description"]
+                result["source"] = "digikey"
+                result["manufacturer"] = supplier_hit["manufacturer"]  # type: ignore[typeddict-unknown-key]
+                api_result = supplier_hit["api_result"]
+                result["source_url"] = f"https://www.digikey.com/en/products/detail/-/-/{api_result['digikey_pn']}"
+                result["datasheet_url"] = api_result.get("datasheet_url")
+                return _finalize_result(result, api_key, output_dir, no_open, tracer)
 
-        print(f"No matching image found for {part_number}", file=sys.stderr)
-        tracer.result(result)
-        print(f"Trace: {tracer.trace_path}", file=sys.stderr)
-        return result
+        # Web search fallback
+        return _try_web_search(part_number, result, output_dir, api_key, client, model, no_open, tracer)
 
 
 def main():
