@@ -57,9 +57,9 @@ def test_download_image_rejects_non_image_content_type():
 
 @responses.activate
 def test_download_image_timeout():
+    import requests as req_lib
     responses.add(responses.GET, "https://example.com/slow.jpg",
-                  body=ConnectionError("Connection timed out"))
-    # download_image falls back to playwright; mock it out to return None
+                  body=req_lib.exceptions.Timeout("Connection timed out"))
     with patch("magpiebom.images._download_playwright", return_value=None):
         assert download_image("https://example.com/slow.jpg") is None
 
