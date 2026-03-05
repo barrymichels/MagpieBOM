@@ -1,122 +1,81 @@
 # tests/test_validator.py
 import json
-import tempfile
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 from magpiebom.validator import validate_image, get_model_name, extract_description, extract_description_from_sources
+from tests.helpers import TINY_PNG, make_mock_llm_client
 
 
-# 1x1 red PNG
-TINY_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
-    b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00"
-    b"\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00"
-    b"\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-)
-
-
-def _make_mock_client(response_content: str):
-    """Create a mock OpenAI client that returns the given content."""
-    client = MagicMock()
-    choice = MagicMock()
-    choice.message.content = response_content
-    completion = MagicMock()
-    completion.choices = [choice]
-    client.chat.completions.create.return_value = completion
-    return client
-
-
-def test_validate_image_match():
-    client = _make_mock_client('{"match": true, "reason": "Image shows a TO-220 voltage regulator"}')
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        f.write(TINY_PNG)
-        f.flush()
-        result = validate_image(
-            client=client,
-            model="test-model",
-            image_path=f.name,
-            part_number="LM7805",
-            description="5V voltage regulator",
-        )
+def test_validate_image_match(tiny_png_path):
+    client = make_mock_llm_client('{"match": true, "reason": "Image shows a TO-220 voltage regulator"}')
+    result = validate_image(
+        client=client,
+        model="test-model",
+        image_path=tiny_png_path,
+        part_number="LM7805",
+        description="5V voltage regulator",
+    )
     assert result["match"] is True
     assert "reason" in result
-    Path(f.name).unlink()
 
 
-def test_validate_image_no_match():
-    client = _make_mock_client('{"match": false, "reason": "Image shows a capacitor, not a voltage regulator"}')
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        f.write(TINY_PNG)
-        f.flush()
-        result = validate_image(
-            client=client,
-            model="test-model",
-            image_path=f.name,
-            part_number="LM7805",
-            description="5V voltage regulator",
-        )
+def test_validate_image_no_match(tiny_png_path):
+    client = make_mock_llm_client('{"match": false, "reason": "Image shows a capacitor, not a voltage regulator"}')
+    result = validate_image(
+        client=client,
+        model="test-model",
+        image_path=tiny_png_path,
+        part_number="LM7805",
+        description="5V voltage regulator",
+    )
     assert result["match"] is False
-    Path(f.name).unlink()
 
 
-def test_validate_image_handles_malformed_llm_response():
-    client = _make_mock_client("I think this looks like the right part!")
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        f.write(TINY_PNG)
-        f.flush()
-        result = validate_image(
-            client=client,
-            model="test-model",
-            image_path=f.name,
-            part_number="LM7805",
-            description="5V voltage regulator",
-        )
+def test_validate_image_handles_malformed_llm_response(tiny_png_path):
+    client = make_mock_llm_client("I think this looks like the right part!")
+    result = validate_image(
+        client=client,
+        model="test-model",
+        image_path=tiny_png_path,
+        part_number="LM7805",
+        description="5V voltage regulator",
+    )
     # Non-JSON response should default to no match
     assert result["match"] is False
-    Path(f.name).unlink()
 
 
-def test_validate_image_extracts_json_from_verbose_response():
+def test_validate_image_extracts_json_from_verbose_response(tiny_png_path):
     """LLM returns reasoning text with JSON embedded in it."""
     verbose_response = (
         '**Analysis:**\n1. The image shows a connector\n'
         '2. It matches the description\n\n'
         '{"match": true, "reason": "Image shows the correct connector"}\n'
     )
-    client = _make_mock_client(verbose_response)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        f.write(TINY_PNG)
-        f.flush()
-        result = validate_image(
-            client=client,
-            model="test-model",
-            image_path=f.name,
-            part_number="B-2100S08P",
-            description="8-pin connector",
-        )
+    client = make_mock_llm_client(verbose_response)
+    result = validate_image(
+        client=client,
+        model="test-model",
+        image_path=tiny_png_path,
+        part_number="B-2100S08P",
+        description="8-pin connector",
+    )
     assert result["match"] is True
-    Path(f.name).unlink()
 
 
-def test_validate_image_extracts_json_from_code_fence():
+def test_validate_image_extracts_json_from_code_fence(tiny_png_path):
     """LLM wraps JSON in markdown code fences."""
     fenced_response = 'Here is my analysis:\n```json\n{"match": false, "reason": "Wrong part"}\n```'
-    client = _make_mock_client(fenced_response)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        f.write(TINY_PNG)
-        f.flush()
-        result = validate_image(
-            client=client,
-            model="test-model",
-            image_path=f.name,
-            part_number="LM7805",
-            description="5V voltage regulator",
-        )
+    client = make_mock_llm_client(fenced_response)
+    result = validate_image(
+        client=client,
+        model="test-model",
+        image_path=tiny_png_path,
+        part_number="LM7805",
+        description="5V voltage regulator",
+    )
     assert result["match"] is False
     assert result["reason"] == "Wrong part"
-    Path(f.name).unlink()
 
 
 def test_get_model_name():
@@ -132,7 +91,7 @@ def test_get_model_name():
 
 def test_extract_description_returns_technical_text():
     """LLM should synthesize a technical description from text signals."""
-    client = _make_mock_client('{"description": "Female Header 10 Position 2.54mm Pitch Dual Row Through Hole"}')
+    client = make_mock_llm_client('{"description": "Female Header 10 Position 2.54mm Pitch Dual Row Through Hole"}')
     signals = {
         "title": "PM254V-12-10P-H85 | XFCN | Price | In Stock | LCSC Electronics",
         "meta_description": "PM254V-12-10P-H85 by XFCN - In-stock components at LCSC.",
@@ -146,7 +105,7 @@ def test_extract_description_returns_technical_text():
 
 def test_extract_description_empty_when_no_info():
     """LLM returns empty description when signals contain no useful info."""
-    client = _make_mock_client('{"description": ""}')
+    client = make_mock_llm_client('{"description": ""}')
     signals = {
         "title": "Page Not Found",
         "meta_description": "",
@@ -176,7 +135,7 @@ def test_extract_description_handles_llm_failure():
 def test_extract_description_extracts_json_from_verbose_response():
     """LLM wraps JSON in reasoning text — should still extract."""
     verbose = 'Let me analyze this.\n\n{"description": "5V Linear Voltage Regulator TO-220"}\n\nThat is my answer.'
-    client = _make_mock_client(verbose)
+    client = make_mock_llm_client(verbose)
     signals = {
         "title": "LM7805 Regulator",
         "meta_description": "LM7805 voltage regulator",
@@ -190,7 +149,7 @@ def test_extract_description_extracts_json_from_verbose_response():
 
 def test_extract_description_unparseable_returns_empty():
     """Completely unparseable LLM response should return empty."""
-    client = _make_mock_client("I don't know what this component is.")
+    client = make_mock_llm_client("I don't know what this component is.")
     signals = {
         "title": "Unknown",
         "meta_description": "",
@@ -205,7 +164,7 @@ def test_extract_description_unparseable_returns_empty():
 def test_extract_description_truncated_json():
     """Truncated JSON (max_tokens hit) should still extract the description text."""
     truncated = '{"description": "2.54mm female header connector, 8-pin, 3A current rating'
-    client = _make_mock_client(truncated)
+    client = make_mock_llm_client(truncated)
     signals = {"title": "Part", "meta_description": "", "meta_keywords": "", "url_path": "/", "paragraphs": []}
     result = extract_description(client, "test-model", "PM254V-12-08-H85", signals)
     assert "2.54mm female header connector" in result
@@ -216,7 +175,7 @@ def test_extract_description_truncated_json():
 
 def test_extract_from_sources_combines_multiple_sources():
     """Should send all sources in a single LLM call and return the result."""
-    client = _make_mock_client('{"description": "Female Header 8 Position 2.54mm Pitch Dual Row Through Hole"}')
+    client = make_mock_llm_client('{"description": "Female Header 8 Position 2.54mm Pitch Dual Row Through Hole"}')
     sources = [
         {
             "title": "PM254V-12-08-H85 | LCSC",
@@ -266,7 +225,7 @@ def test_extract_from_sources_handles_llm_failure():
 
 def test_extract_from_sources_uses_temperature_zero():
     """LLM call should use temperature=0 for deterministic output."""
-    client = _make_mock_client('{"description": "5V Regulator"}')
+    client = make_mock_llm_client('{"description": "5V Regulator"}')
     sources = [{"title": "LM7805", "meta_description": "regulator", "meta_keywords": "", "url_path": "/", "url_category": "", "paragraphs": []}]
     extract_description_from_sources(client, "test-model", "LM7805", sources)
     call_kwargs = client.chat.completions.create.call_args[1]
@@ -275,7 +234,7 @@ def test_extract_from_sources_uses_temperature_zero():
 
 def test_extract_from_sources_includes_brave_snippets():
     """Brave search snippets (title + description only) should be valid sources."""
-    client = _make_mock_client('{"description": "Pin Header Connector 2.54mm"}')
+    client = make_mock_llm_client('{"description": "Pin Header Connector 2.54mm"}')
     sources = [
         # Brave snippet — minimal fields
         {
