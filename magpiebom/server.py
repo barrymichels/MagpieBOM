@@ -212,12 +212,3 @@ def server_main(args):
     app.run(host=args.host, port=args.port, debug=True, threaded=True)
 
 
-def main():
-    """Standalone entry point (for development)."""
-    import argparse
-    parser = argparse.ArgumentParser(prog="magpiebom server")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=5000)
-    parser.add_argument("-v", "--verbose", action="store_true")
-    args = parser.parse_args()
-    server_main(args)

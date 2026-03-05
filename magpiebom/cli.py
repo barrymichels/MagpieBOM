@@ -1,6 +1,7 @@
 # magpiebom/cli.py
 import argparse
 import os
+import requests
 import subprocess
 import sys
 import time
@@ -15,7 +16,7 @@ from magpiebom.mouser import mouser_search
 from magpiebom.scraper import scrape_page
 from magpiebom.search import KNOWN_COMPONENT_SITES, brave_search
 from magpiebom.tracer import Tracer
-from magpiebom.validator import get_model_name, extract_description, extract_description_from_sources, validate_image
+from magpiebom.validator import get_model_name, extract_description_from_sources, validate_image
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -78,7 +79,6 @@ def _probe_url(url: str | None, tracer: Tracer | None = None) -> bool:
     """HTTP HEAD check to see if a URL is reachable. Returns True for 2xx/3xx."""
     if not url:
         return False
-    import requests
     try:
         t0 = time.monotonic()
         resp = requests.head(
@@ -332,7 +332,6 @@ def _download_datasheet(url: str, part_number: str, output_dir: str, tracer: Tra
     if tracer:
         tracer.detail(f"Downloading datasheet: {url}")
     try:
-        import requests
         t0 = time.monotonic()
         resp = requests.get(url, timeout=15, headers={
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
