@@ -59,7 +59,9 @@ def test_download_image_rejects_non_image_content_type():
 def test_download_image_timeout():
     responses.add(responses.GET, "https://example.com/slow.jpg",
                   body=ConnectionError("Connection timed out"))
-    assert download_image("https://example.com/slow.jpg") is None
+    # download_image falls back to playwright; mock it out to return None
+    with patch("magpiebom.images._download_playwright", return_value=None):
+        assert download_image("https://example.com/slow.jpg") is None
 
 
 def test_get_extension_from_url():
