@@ -3,6 +3,7 @@ import time
 import requests
 
 from magpiebom.tracer import Tracer
+from magpiebom.types import SearchResult
 
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
@@ -25,7 +26,7 @@ def brave_search(
     count: int = 5,
     query_template: str = '"{part}" electronic component',
     tracer: Tracer | None = None,
-) -> list[dict]:
+) -> list[SearchResult]:
     """Search Brave for a part number. Returns list of {url, title, description}."""
     query = query_template.format(part=part_number)
     start = time.monotonic()

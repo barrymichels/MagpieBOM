@@ -4,6 +4,7 @@ import time
 import requests
 
 from magpiebom.tracer import Tracer
+from magpiebom.types import DigiKeyResult
 
 TOKEN_URL = "https://api.digikey.com/v1/oauth2/token"
 SEARCH_URL = "https://api.digikey.com/products/v4/search/keyword"
@@ -39,7 +40,7 @@ def _get_token(client_id: str, client_secret: str, tracer: Tracer | None = None)
     return resp.json()["access_token"]
 
 
-def digikey_search(part_number: str, client_id: str, client_secret: str, tracer: Tracer | None = None) -> dict | None:
+def digikey_search(part_number: str, client_id: str, client_secret: str, tracer: Tracer | None = None) -> DigiKeyResult | None:
     """Search DigiKey for a part. Returns {description, image_url} or None."""
     token = _get_token(client_id, client_secret, tracer=tracer)
 

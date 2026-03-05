@@ -4,11 +4,12 @@ import time
 import requests
 
 from magpiebom.tracer import Tracer
+from magpiebom.types import MouserResult
 
 MOUSER_API_URL = "https://api.mouser.com/api/v1/search/partnumber"
 
 
-def mouser_search(part_number: str, api_key: str, tracer: Tracer | None = None) -> dict | None:
+def mouser_search(part_number: str, api_key: str, tracer: Tracer | None = None) -> MouserResult | None:
     """Search Mouser for a part. Returns {description, image_url} or None."""
     start = time.monotonic()
     resp = requests.post(

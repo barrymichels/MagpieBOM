@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from magpiebom.constants import BROWSER_UA, SKIP_PDF_PATTERNS as _SKIP_PDF_PATTERNS, MAX_PAGES_PER_SEARCH, MAX_SOURCES_FOR_EXTRACTION, MAX_SEARCH_RESULTS
+from magpiebom.types import PipelineResult
 from magpiebom.digikey import digikey_search
 from magpiebom.images import download_image, save_final_image
 from magpiebom.mouser import mouser_search
@@ -362,7 +363,7 @@ def run_pipeline(
     output_dir: str = "./parts",
     no_open: bool = False,
     verbose: bool = False,
-) -> dict:
+) -> PipelineResult:
     """Run the full search-scrape-validate pipeline. Returns a result dict."""
     result = {
         "part_number": part_number,

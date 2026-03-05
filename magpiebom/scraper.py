@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from magpiebom.constants import SKIP_PDF_PATTERNS
 from magpiebom.tracer import Tracer
+from magpiebom.types import PageInfo, TextSignals
 
 # Image dimension attributes below this are considered icons/logos
 MIN_IMAGE_DIMENSION = 100
@@ -22,7 +23,7 @@ SKIP_URL_PATTERNS = ["advertising", "banner", "logo", "icon", "sprite", "favicon
 MAX_PARAGRAPHS = 5
 
 
-def scrape_page(url: str, timeout: int = 10, tracer: Tracer | None = None) -> dict:
+def scrape_page(url: str, timeout: int = 10, tracer: Tracer | None = None) -> PageInfo:
     """Fetch a URL and extract text signals + image URLs."""
     start = time.monotonic()
     resp = requests.get(url, timeout=timeout, headers={"User-Agent": "MagpieBOM/0.1"})
@@ -41,7 +42,7 @@ def scrape_page(url: str, timeout: int = 10, tracer: Tracer | None = None) -> di
     return result
 
 
-def extract_page_info(html: str, base_url: str) -> dict:
+def extract_page_info(html: str, base_url: str) -> PageInfo:
     """Parse HTML and return {text_signals, image_urls, datasheet_urls}."""
     soup = BeautifulSoup(html, "lxml")
     text_signals = _extract_text_signals(soup, base_url)
@@ -50,7 +51,7 @@ def extract_page_info(html: str, base_url: str) -> dict:
     return {"text_signals": text_signals, "image_urls": image_urls, "datasheet_urls": datasheet_urls}
 
 
-def _extract_text_signals(soup: BeautifulSoup, url: str) -> dict:
+def _extract_text_signals(soup: BeautifulSoup, url: str) -> TextSignals:
     """Extract structured text signals from a page for LLM description extraction."""
     # Title
     title = ""

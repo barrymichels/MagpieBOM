@@ -1,11 +1,12 @@
 # magpiebom/batch.py
+import argparse
 import sys
 
 from magpiebom.cli import run_pipeline
 from magpiebom.report import generate_report
 
 
-def _read_part_numbers(args) -> list[str]:
+def _read_part_numbers(args: argparse.Namespace) -> list[str]:
     """Read part numbers from args, file, or stdin."""
     parts = []
 
@@ -30,7 +31,7 @@ def _read_part_numbers(args) -> list[str]:
     return parts
 
 
-def batch_main(args):
+def batch_main(args: argparse.Namespace) -> None:
     part_numbers = _read_part_numbers(args)
 
     if not part_numbers:
