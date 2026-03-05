@@ -70,7 +70,7 @@ def _download_requests(url: str, timeout: int, tracer: Tracer | None = None) -> 
             tmp.write(chunk)
         tmp.close()
         return tmp.name
-    except Exception:
+    except (IOError, OSError):
         tmp.close()
         Path(tmp.name).unlink(missing_ok=True)
         return None
@@ -85,6 +85,7 @@ def _download_playwright(url: str, timeout: int, tracer: Tracer | None = None) -
             tracer.detail(f"Playwright not available for {url}")
         return None
 
+    tmp = None
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -111,10 +112,8 @@ def _download_playwright(url: str, timeout: int, tracer: Tracer | None = None) -
             browser.close()
             return tmp.name
     except Exception:
-        try:
+        if tmp:
             Path(tmp.name).unlink(missing_ok=True)
-        except UnboundLocalError:
-            pass
         return None
 
 

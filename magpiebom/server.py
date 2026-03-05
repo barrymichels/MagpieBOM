@@ -1,6 +1,7 @@
 # magpiebom/server.py
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -137,7 +138,8 @@ def batch_stream(batch_id: str):
                     no_open=True,
                     verbose=False,
                 )
-            except Exception:
+            except Exception as e:
+                print(f"Pipeline error for {pn}: {e}", file=sys.stderr)
                 result = {"part_number": pn, "image_path": None, "source": "", "source_url": "", "description": "", "datasheet_url": None, "datasheet_path": None}
 
             data["parts"][i] = _result_to_part(pn, result)
@@ -187,7 +189,8 @@ def batch_retry(batch_id: str, part_number: str):
                 no_open=True,
                 verbose=False,
             )
-        except Exception:
+        except Exception as e:
+            print(f"Pipeline error for {part_number}: {e}", file=sys.stderr)
             result = {"part_number": part_number, "image_path": None, "source": "", "source_url": "", "description": "", "datasheet_url": None, "datasheet_path": None}
 
         data["parts"][idx] = _result_to_part(part_number, result)

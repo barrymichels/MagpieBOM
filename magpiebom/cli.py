@@ -92,7 +92,7 @@ def _probe_url(url: str | None, tracer: Tracer | None = None) -> bool:
             tracer.http(url=url, method="HEAD", status=resp.status_code,
                         headers=dict(resp.headers), body=None, duration_ms=duration_ms)
         return resp.status_code < 400
-    except Exception:
+    except (requests.RequestException, OSError):
         return False
 
 
@@ -125,7 +125,7 @@ def _find_source_url_fallback(
     return None
 
 
-def _validate_urls(result: dict, api_key: str, tracer: Tracer | None = None) -> None:
+def _fix_broken_urls(result: dict, api_key: str, tracer: Tracer | None = None) -> None:
     """Validate source_url and datasheet_url; attempt fallback or null out if broken."""
     part_number = result["part_number"]
     source = result.get("source", "")
@@ -418,7 +418,7 @@ def run_pipeline(
                             result["datasheet_path"] = _download_datasheet(
                                 result["datasheet_url"], part_number, output_dir, tracer=tracer
                             )
-                        _validate_urls(result, api_key, tracer=tracer)
+                        _fix_broken_urls(result, api_key, tracer=tracer)
                         if not no_open:
                             subprocess.Popen(["xdg-open", saved_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         tracer.result(result)
@@ -427,7 +427,7 @@ def run_pipeline(
                 else:
                     tracer.detail("Mouser: no results")
             except Exception as e:
-                tracer.detail(f"Mouser API failed: {e}")
+                tracer.error(f"Mouser API failed: {e}", exception=e)
 
         # Try DigiKey API
         dk_client_id = os.environ.get("DIGIKEY_CLIENT_ID")
@@ -458,7 +458,7 @@ def run_pipeline(
                             result["datasheet_path"] = _download_datasheet(
                                 result["datasheet_url"], part_number, output_dir, tracer=tracer
                             )
-                        _validate_urls(result, api_key, tracer=tracer)
+                        _fix_broken_urls(result, api_key, tracer=tracer)
                         if not no_open:
                             subprocess.Popen(["xdg-open", saved_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         tracer.result(result)
@@ -467,7 +467,7 @@ def run_pipeline(
                 else:
                     tracer.detail("DigiKey: no results")
             except Exception as e:
-                tracer.detail(f"DigiKey API failed: {e}")
+                tracer.error(f"DigiKey API failed: {e}", exception=e)
 
         queries = [
             '"{part}" electronic component',
@@ -601,7 +601,7 @@ def run_pipeline(
                     result["datasheet_path"] = _download_datasheet(
                         result["datasheet_url"], part_number, output_dir, tracer=tracer
                     )
-                _validate_urls(result, api_key, tracer=tracer)
+                _fix_broken_urls(result, api_key, tracer=tracer)
                 if not no_open:
                     subprocess.Popen(["xdg-open", saved_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 tracer.result(result)

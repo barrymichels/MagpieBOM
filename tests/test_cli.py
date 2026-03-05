@@ -1,7 +1,7 @@
 # tests/test_cli.py
 from unittest.mock import patch, MagicMock, call
 import responses as resp_mock
-from magpiebom.cli import parse_args, run_pipeline, _is_url_structurally_valid, _probe_url, _find_source_url_fallback, _validate_urls, _search_datasheet_url, _scrape_datasheet_playwright
+from magpiebom.cli import parse_args, run_pipeline, _is_url_structurally_valid, _probe_url, _find_source_url_fallback, _fix_broken_urls, _search_datasheet_url, _scrape_datasheet_playwright
 
 
 def _mock_tracer_cls():
@@ -70,7 +70,7 @@ def test_parse_args_server_subcommand():
 
 
 @patch("magpiebom.cli.Tracer")
-@patch("magpiebom.cli._validate_urls")
+@patch("magpiebom.cli._fix_broken_urls")
 @patch("magpiebom.cli.brave_search")
 @patch("magpiebom.cli.scrape_page")
 @patch("magpiebom.cli.download_image")
@@ -83,7 +83,7 @@ def test_parse_args_server_subcommand():
 @patch("os.environ", {"BRAVE_API_KEY": "test-key"})
 def test_run_pipeline_success(
     mock_dotenv, mock_openai_cls, mock_get_model, mock_save, mock_extract_sources,
-    mock_validate, mock_download, mock_scrape, mock_search, mock_validate_urls,
+    mock_validate, mock_download, mock_scrape, mock_search, mock_fix_broken_urls,
     mock_tracer_cls
 ):
     mock_tracer_cls.return_value.__enter__ = MagicMock(return_value=mock_tracer_cls.return_value)
@@ -143,7 +143,7 @@ def test_run_pipeline_no_match(
 
 
 @patch("magpiebom.cli.Tracer")
-@patch("magpiebom.cli._validate_urls")
+@patch("magpiebom.cli._fix_broken_urls")
 @patch("magpiebom.cli.brave_search")
 @patch("magpiebom.cli.scrape_page")
 @patch("magpiebom.cli.download_image")
@@ -156,7 +156,7 @@ def test_run_pipeline_no_match(
 @patch("os.environ", {"BRAVE_API_KEY": "test-key"})
 def test_run_pipeline_skips_wrong_part_number(
     mock_dotenv, mock_openai_cls, mock_get_model, mock_save, mock_extract_sources,
-    mock_validate, mock_download, mock_scrape, mock_search, mock_validate_urls,
+    mock_validate, mock_download, mock_scrape, mock_search, mock_fix_broken_urls,
     mock_tracer_cls
 ):
     """Pages about a different part variant should be skipped without LLM image calls."""
@@ -342,12 +342,12 @@ def test_scrape_datasheet_playwright_no_pdfs(mock_pw_cls):
     assert result is None
 
 
-# --- _validate_urls with Playwright fallback ---
+# --- _fix_broken_urls with Playwright fallback ---
 
 @patch("magpiebom.cli._scrape_datasheet_playwright", return_value="https://molex.com/ds.pdf")
 @patch("magpiebom.cli._search_datasheet_url", return_value=None)
 @patch("magpiebom.cli._probe_url", return_value=True)
-def test_validate_urls_playwright_fallback_for_missing_datasheet(mock_probe, mock_search, mock_pw):
+def test_fix_broken_urls_playwright_fallback_for_missing_datasheet(mock_probe, mock_search, mock_pw):
     """When no datasheet_url exists and Brave search fails, try Playwright on source_url."""
     result = {
         "part_number": "39502-1002",
@@ -356,7 +356,7 @@ def test_validate_urls_playwright_fallback_for_missing_datasheet(mock_probe, moc
         "datasheet_url": None,
         "datasheet_path": None,
     }
-    _validate_urls(result, api_key="key")
+    _fix_broken_urls(result, api_key="key")
     assert result["datasheet_url"] == "https://molex.com/ds.pdf"
     mock_pw.assert_called_once_with(
         "https://www.mouser.com/ProductDetail/Molex/39502-1002", "39502-1002", tracer=None,
@@ -393,10 +393,10 @@ def test_find_source_url_fallback_web_source():
     assert result is None
 
 
-# --- _validate_urls tests ---
+# --- _fix_broken_urls tests ---
 
 @patch("magpiebom.cli._probe_url", return_value=True)
-def test_validate_urls_all_good(mock_probe):
+def test_fix_broken_urls_all_good(mock_probe):
     result = {
         "part_number": "LM7805",
         "source": "mouser",
@@ -404,13 +404,13 @@ def test_validate_urls_all_good(mock_probe):
         "datasheet_url": "https://example.com/LM7805.pdf",
         "datasheet_path": "/tmp/LM7805.pdf",
     }
-    _validate_urls(result, api_key="key")
+    _fix_broken_urls(result, api_key="key")
     assert result["source_url"] == "https://www.mouser.com/ProductDetail/LM7805"
     assert result["datasheet_url"] == "https://example.com/LM7805.pdf"
 
 @patch("magpiebom.cli._find_source_url_fallback", return_value=None)
 @patch("magpiebom.cli._probe_url", return_value=False)
-def test_validate_urls_bad_source_url_nulled(mock_probe, mock_fallback):
+def test_fix_broken_urls_bad_source_url_nulled(mock_probe, mock_fallback):
     result = {
         "part_number": "CC0603KRX7R7BB225",
         "source": "digikey",
@@ -418,12 +418,12 @@ def test_validate_urls_bad_source_url_nulled(mock_probe, mock_fallback):
         "datasheet_url": "https://example.com/good.pdf",
         "datasheet_path": None,
     }
-    _validate_urls(result, api_key="key")
+    _fix_broken_urls(result, api_key="key")
     assert result["source_url"] is None
 
 @patch("magpiebom.cli._search_datasheet_url", return_value="https://example.com/replacement.pdf")
 @patch("magpiebom.cli._probe_url", side_effect=lambda url, tracer=None: url != "https://bad.com/truncated")
-def test_validate_urls_bad_datasheet_gets_replacement(mock_probe, mock_search):
+def test_fix_broken_urls_bad_datasheet_gets_replacement(mock_probe, mock_search):
     result = {
         "part_number": "ABC123",
         "source": "digikey",
@@ -431,13 +431,13 @@ def test_validate_urls_bad_datasheet_gets_replacement(mock_probe, mock_search):
         "datasheet_url": "https://bad.com/truncated",
         "datasheet_path": "/tmp/ABC123.pdf",
     }
-    _validate_urls(result, api_key="key")
+    _fix_broken_urls(result, api_key="key")
     assert result["datasheet_url"] == "https://example.com/replacement.pdf"
 
 @patch("magpiebom.cli._search_datasheet_url", return_value=None)
 @patch("magpiebom.cli._probe_url", return_value=False)
 @patch("magpiebom.cli._find_source_url_fallback", return_value=None)
-def test_validate_urls_bad_datasheet_nulled_cleans_path(mock_fallback, mock_probe, mock_search, tmp_path):
+def test_fix_broken_urls_bad_datasheet_nulled_cleans_path(mock_fallback, mock_probe, mock_search, tmp_path):
     pdf_file = tmp_path / "PART.pdf"
     pdf_file.write_text("fake pdf")
     result = {
@@ -447,13 +447,13 @@ def test_validate_urls_bad_datasheet_nulled_cleans_path(mock_fallback, mock_prob
         "datasheet_url": "https://bad.com/broken",
         "datasheet_path": str(pdf_file),
     }
-    _validate_urls(result, api_key="key")
+    _fix_broken_urls(result, api_key="key")
     assert result["datasheet_url"] is None
     assert result["datasheet_path"] is None
     assert not pdf_file.exists()
 
 @patch("magpiebom.cli.Tracer")
-@patch("magpiebom.cli._validate_urls")
+@patch("magpiebom.cli._fix_broken_urls")
 @patch("magpiebom.cli.brave_search")
 @patch("magpiebom.cli.scrape_page")
 @patch("magpiebom.cli.download_image")
@@ -467,7 +467,7 @@ def test_validate_urls_bad_datasheet_nulled_cleans_path(mock_fallback, mock_prob
 def test_run_pipeline_uses_aggregated_extraction(
     mock_dotenv, mock_openai_cls, mock_get_model, mock_save,
     mock_extract_sources, mock_validate, mock_download, mock_scrape,
-    mock_search, mock_validate_urls, mock_tracer_cls
+    mock_search, mock_fix_broken_urls, mock_tracer_cls
 ):
     """Web search path should extract description ONCE from all sources."""
     mock_tracer_cls.return_value.__enter__ = MagicMock(return_value=mock_tracer_cls.return_value)
@@ -509,7 +509,7 @@ def test_run_pipeline_uses_aggregated_extraction(
 
 
 @patch("magpiebom.cli.Tracer")
-@patch("magpiebom.cli._validate_urls")
+@patch("magpiebom.cli._fix_broken_urls")
 @patch("magpiebom.cli.digikey_search")
 @patch("magpiebom.cli.download_image")
 @patch("magpiebom.cli.save_final_image")
@@ -517,9 +517,9 @@ def test_run_pipeline_uses_aggregated_extraction(
 @patch("magpiebom.cli.OpenAI")
 @patch("magpiebom.cli.load_dotenv")
 @patch("os.environ", {"BRAVE_API_KEY": "test-key", "DIGIKEY_CLIENT_ID": "id", "DIGIKEY_CLIENT_SECRET": "secret"})
-def test_run_pipeline_calls_validate_urls_on_digikey(
+def test_run_pipeline_calls_fix_broken_urls_on_digikey(
     mock_dotenv, mock_openai_cls, mock_get_model, mock_save, mock_download,
-    mock_digikey, mock_validate_urls, mock_tracer_cls
+    mock_digikey, mock_fix_broken_urls, mock_tracer_cls
 ):
     mock_tracer_cls.return_value.__enter__ = MagicMock(return_value=mock_tracer_cls.return_value)
     mock_tracer_cls.return_value.__exit__ = MagicMock(return_value=False)
@@ -536,12 +536,12 @@ def test_run_pipeline_calls_validate_urls_on_digikey(
     mock_save.return_value = "./parts/CC0603.jpg"
 
     run_pipeline("CC0603KRX7R7BB225", output_dir="./parts", no_open=True, verbose=False)
-    mock_validate_urls.assert_called_once()
-    call_args = mock_validate_urls.call_args
+    mock_fix_broken_urls.assert_called_once()
+    call_args = mock_fix_broken_urls.call_args
     assert call_args[0][0]["source"] == "digikey"
 
 
-def test_validate_urls_skips_structurally_bad_source():
+def test_fix_broken_urls_skips_structurally_bad_source():
     """Structurally bad URLs skip HEAD probe entirely."""
     result = {
         "part_number": "X",
@@ -552,7 +552,7 @@ def test_validate_urls_skips_structurally_bad_source():
     }
     with patch("magpiebom.cli._find_source_url_fallback", return_value=None) as mock_fb:
         with patch("magpiebom.cli._probe_url") as mock_probe:
-            _validate_urls(result, api_key="key")
+            _fix_broken_urls(result, api_key="key")
             # Should NOT probe the structurally bad URL
             mock_probe.assert_not_called()
     assert result["source_url"] is None
