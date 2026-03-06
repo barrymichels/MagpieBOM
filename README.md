@@ -19,17 +19,11 @@ MagpieBOM takes a part number, searches the web, and returns a verified product 
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/magpiebom.git
+git clone https://github.com/barrymichels/magpiebom.git
 cd magpiebom
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
-```
-
-Playwright (used for bot-protected sites):
-
-```bash
-playwright install chromium
 ```
 
 ## Quick Start
